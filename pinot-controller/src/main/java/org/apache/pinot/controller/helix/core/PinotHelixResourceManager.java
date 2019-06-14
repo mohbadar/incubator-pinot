@@ -53,7 +53,6 @@ import org.apache.helix.PropertyKey;
 import org.apache.helix.PropertyKey.Builder;
 import org.apache.helix.PropertyPathBuilder;
 import org.apache.helix.ZNRecord;
-import org.apache.helix.examples.MasterSlaveStateModelFactory;
 import org.apache.helix.manager.zk.ZkBaseDataAccessor;
 import org.apache.helix.manager.zk.ZkCacheBaseDataAccessor;
 import org.apache.helix.model.CurrentState;
@@ -99,6 +98,7 @@ import org.apache.pinot.common.utils.helix.PinotHelixPropertyStoreZnRecordProvid
 import org.apache.pinot.common.utils.retry.RetryPolicies;
 import org.apache.pinot.common.utils.retry.RetryPolicy;
 import org.apache.pinot.controller.ControllerConf;
+import org.apache.pinot.controller.LeadControllerManager;
 import org.apache.pinot.controller.api.pojos.Instance;
 import org.apache.pinot.controller.helix.core.realtime.PinotLLCRealtimeSegmentManager;
 import org.apache.pinot.controller.helix.core.rebalance.RebalanceSegmentStrategy;
@@ -106,6 +106,7 @@ import org.apache.pinot.controller.helix.core.rebalance.RebalanceSegmentStrategy
 import org.apache.pinot.controller.helix.core.sharding.SegmentAssignmentStrategy;
 import org.apache.pinot.controller.helix.core.sharding.SegmentAssignmentStrategyEnum;
 import org.apache.pinot.controller.helix.core.sharding.SegmentAssignmentStrategyFactory;
+import org.apache.pinot.controller.helix.core.statemodel.LeadControllerResourceMasterSlaveStateModelFactory;
 import org.apache.pinot.controller.helix.core.util.ZKMetadataUtils;
 import org.apache.pinot.controller.helix.starter.HelixConfig;
 import org.apache.pinot.core.realtime.stream.StreamConfig;
@@ -143,6 +144,7 @@ public class PinotHelixResourceManager {
   private PinotLLCRealtimeSegmentManager _pinotLLCRealtimeSegmentManager;
   private RebalanceSegmentStrategyFactory _rebalanceSegmentStrategyFactory;
   private TableRebalancer _tableRebalancer;
+  private LeadControllerManager _leadControllerManager;
 
   public PinotHelixResourceManager(@Nonnull String zkURL, @Nonnull String helixClusterName,
       @Nonnull String controllerInstanceId, String dataDir, long externalViewOnlineToOfflineTimeoutMillis,
@@ -169,6 +171,8 @@ public class PinotHelixResourceManager {
    * Create Helix cluster if needed, and then start a Pinot controller instance.
    */
   public synchronized void start() {
+    // LeadControllerManager needs to be initialized before registering to Helix participant.
+    _leadControllerManager = new LeadControllerManager();
     _helixZkManager = registerAndConnectAsHelixParticipant();
     _helixAdmin = _helixZkManager.getClusterManagmentTool();
     _propertyStore = _helixZkManager.getHelixPropertyStore();
@@ -188,6 +192,7 @@ public class PinotHelixResourceManager {
     _segmentDeletionManager = new SegmentDeletionManager(_dataDir, _helixAdmin, _helixClusterName, _propertyStore);
     ZKMetadataProvider.setClusterTenantIsolationEnabled(_propertyStore, _isSingleTenantCluster);
     _tableRebalancer = new TableRebalancer(_helixZkManager, _helixAdmin, _helixClusterName);
+    _leadControllerManager.registerResourceManager(this);
   }
 
   /**
@@ -254,6 +259,16 @@ public class PinotHelixResourceManager {
     return _propertyStore;
   }
 
+
+  /**
+   * Get lead controller manager.
+   *
+   * @return lead controller manager
+   */
+  public LeadControllerManager getLeadControllerManager() {
+    return _leadControllerManager;
+  }
+
   /**
    * Register and connect to Helix cluster as PARTICIPANT role.
    */
@@ -262,8 +277,8 @@ public class PinotHelixResourceManager {
         HelixManagerFactory.getZKHelixManager(_helixClusterName, _instanceId, InstanceType.PARTICIPANT, _helixZkURL);
 
     // Registers Master-Slave state model to state machine engine, which is for calculating participant assignment in lead controller resource.
-    helixManager.getStateMachineEngine()
-        .registerStateModelFactory(MasterSlaveSMD.name, new MasterSlaveStateModelFactory());
+    helixManager.getStateMachineEngine().registerStateModelFactory(MasterSlaveSMD.name,
+        new LeadControllerResourceMasterSlaveStateModelFactory(_leadControllerManager));
 
     try {
       helixManager.connect();
@@ -2369,6 +2384,13 @@ public class PinotHelixResourceManager {
       endpointToInstance.put(instance, hostnameSplit[1] + ":" + adminPort);
     }
     return endpointToInstance;
+  }
+
+  public boolean isHelixLeader() {
+    PropertyKey propertyKey = _keyBuilder.controllerLeader();
+    LiveInstance liveInstance = _helixDataAccessor.getProperty(propertyKey);
+    String helixLeaderInstanceId = liveInstance.getInstanceName();
+    return _instanceId.equals(CommonConstants.Helix.PREFIX_OF_CONTROLLER_INSTANCE + helixLeaderInstanceId);
   }
 
   /*
