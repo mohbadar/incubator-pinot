@@ -133,6 +133,7 @@ public class PinotHelixResourceManager {
   private final boolean _isSingleTenantCluster;
   private final boolean _enableBatchMessageMode;
   private final boolean _allowHLCTables;
+  private final InstanceType _helixInstanceType;
 
   private HelixManager _helixZkManager;
   private HelixAdmin _helixAdmin;
@@ -148,7 +149,7 @@ public class PinotHelixResourceManager {
 
   public PinotHelixResourceManager(@Nonnull String zkURL, @Nonnull String helixClusterName,
       @Nonnull String controllerInstanceId, String dataDir, long externalViewOnlineToOfflineTimeoutMillis,
-      boolean isSingleTenantCluster, boolean enableBatchMessageMode, boolean allowHLCTables) {
+      boolean isSingleTenantCluster, boolean enableBatchMessageMode, boolean allowHLCTables, String helixInstanceType) {
     _helixZkURL = HelixConfig.getAbsoluteZkPathForHelix(zkURL);
     _helixClusterName = helixClusterName;
     _instanceId = controllerInstanceId;
@@ -157,6 +158,7 @@ public class PinotHelixResourceManager {
     _isSingleTenantCluster = isSingleTenantCluster;
     _enableBatchMessageMode = enableBatchMessageMode;
     _allowHLCTables = allowHLCTables;
+    _helixInstanceType = InstanceType.valueOf(helixInstanceType);
   }
 
   public PinotHelixResourceManager(@Nonnull ControllerConf controllerConf) {
@@ -164,7 +166,7 @@ public class PinotHelixResourceManager {
         CommonConstants.Helix.PREFIX_OF_CONTROLLER_INSTANCE + controllerConf.getControllerHost() + "_" + controllerConf
             .getControllerPort(), controllerConf.getDataDir(), controllerConf.getExternalViewOnlineToOfflineTimeout(),
         controllerConf.tenantIsolationEnabled(), controllerConf.getEnableBatchMessageMode(),
-        controllerConf.getHLCTablesAllowed());
+        controllerConf.getHLCTablesAllowed(), controllerConf.getHelixInstanceType());
   }
 
   /**
@@ -173,7 +175,7 @@ public class PinotHelixResourceManager {
   public synchronized void start() {
     // LeadControllerManager needs to be initialized before registering to Helix participant.
     _leadControllerManager = new LeadControllerManager();
-    _helixZkManager = registerAndConnectAsHelixParticipant();
+    _helixZkManager = registerAndConnectToHelixCluster();
     _helixAdmin = _helixZkManager.getClusterManagmentTool();
     _propertyStore = _helixZkManager.getHelixPropertyStore();
     _helixDataAccessor = _helixZkManager.getHelixDataAccessor();
@@ -272,14 +274,16 @@ public class PinotHelixResourceManager {
   /**
    * Register and connect to Helix cluster as PARTICIPANT role.
    */
-  private HelixManager registerAndConnectAsHelixParticipant() {
+  private HelixManager registerAndConnectToHelixCluster() {
     HelixManager helixManager =
-        HelixManagerFactory.getZKHelixManager(_helixClusterName, _instanceId, InstanceType.PARTICIPANT, _helixZkURL);
+        HelixManagerFactory.getZKHelixManager(_helixClusterName, _instanceId, _helixInstanceType, _helixZkURL);
 
     // Registers Master-Slave state model to state machine engine, which is for calculating participant assignment in lead controller resource.
-    helixManager.getStateMachineEngine().registerStateModelFactory(MasterSlaveSMD.name,
-        new LeadControllerResourceMasterSlaveStateModelFactory(_leadControllerManager));
-
+    if (_helixInstanceType.equals(InstanceType.PARTICIPANT)) {
+      helixManager.getStateMachineEngine()
+          .registerStateModelFactory(MasterSlaveSMD.name,
+              new LeadControllerResourceMasterSlaveStateModelFactory(_leadControllerManager));
+    }
     try {
       helixManager.connect();
       return helixManager;
@@ -2407,13 +2411,14 @@ public class PinotHelixResourceManager {
     final boolean isSingleTenantCluster = false;
     final boolean isUpdateStateModel = false;
     final boolean enableBatchMessageMode = false;
-    MetricsRegistry metricsRegistry = new MetricsRegistry();
+    final String helixInstanceType = InstanceType.ADMINISTRATOR.name();
     final boolean dryRun = true;
     final String tableName = "testTable";
     final TableType tableType = TableType.OFFLINE;
     PinotHelixResourceManager helixResourceManager =
         new PinotHelixResourceManager(zkURL, helixClusterName, controllerInstanceId, localDiskDir,
-            externalViewOnlineToOfflineTimeoutMillis, isSingleTenantCluster, isUpdateStateModel, enableBatchMessageMode);
+            externalViewOnlineToOfflineTimeoutMillis, isSingleTenantCluster, isUpdateStateModel, enableBatchMessageMode,
+            helixInstanceType);
     helixResourceManager.start();
     ZNRecord record = helixResourceManager.rebalanceTable(tableName, dryRun, tableType);
     ObjectMapper mapper = new ObjectMapper();
