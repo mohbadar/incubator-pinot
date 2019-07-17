@@ -94,6 +94,7 @@ import org.apache.pinot.common.utils.CommonConstants.Helix.StateModel.SegmentOnl
 import org.apache.pinot.common.utils.CommonConstants.Helix.TableType;
 import org.apache.pinot.common.utils.SchemaUtils;
 import org.apache.pinot.common.utils.helix.HelixHelper;
+import org.apache.pinot.common.utils.helix.LeadControllerUtils;
 import org.apache.pinot.common.utils.helix.PinotHelixPropertyStoreZnRecordProvider;
 import org.apache.pinot.common.utils.retry.RetryPolicies;
 import org.apache.pinot.common.utils.retry.RetryPolicy;
@@ -149,7 +150,7 @@ public class PinotHelixResourceManager {
 
   public PinotHelixResourceManager(@Nonnull String zkURL, @Nonnull String helixClusterName,
       @Nonnull String controllerInstanceId, String dataDir, long externalViewOnlineToOfflineTimeoutMillis,
-      boolean isSingleTenantCluster, boolean enableBatchMessageMode, boolean allowHLCTables, String helixInstanceType) {
+      boolean isSingleTenantCluster, boolean enableBatchMessageMode, boolean allowHLCTables, InstanceType helixInstanceType) {
     _helixZkURL = HelixConfig.getAbsoluteZkPathForHelix(zkURL);
     _helixClusterName = helixClusterName;
     _instanceId = controllerInstanceId;
@@ -158,15 +159,20 @@ public class PinotHelixResourceManager {
     _isSingleTenantCluster = isSingleTenantCluster;
     _enableBatchMessageMode = enableBatchMessageMode;
     _allowHLCTables = allowHLCTables;
-    _helixInstanceType = InstanceType.valueOf(helixInstanceType);
+    _helixInstanceType = helixInstanceType;
+  }
+
+  // This constructor should only be explicitly called by {@link ControllerStarter}.
+  public PinotHelixResourceManager(@Nonnull ControllerConf controllerConf, InstanceType instanceType) {
+    this(controllerConf.getZkStr(), controllerConf.getHelixClusterName(), LeadControllerUtils
+            .generateControllerParticipantId(controllerConf.getControllerHost(), controllerConf.getControllerPort()),
+        controllerConf.getDataDir(), controllerConf.getExternalViewOnlineToOfflineTimeout(),
+        controllerConf.tenantIsolationEnabled(), controllerConf.getEnableBatchMessageMode(),
+        controllerConf.getHLCTablesAllowed(), instanceType);
   }
 
   public PinotHelixResourceManager(@Nonnull ControllerConf controllerConf) {
-    this(controllerConf.getZkStr(), controllerConf.getHelixClusterName(),
-        CommonConstants.Helix.PREFIX_OF_CONTROLLER_INSTANCE + controllerConf.getControllerHost() + "_" + controllerConf
-            .getControllerPort(), controllerConf.getDataDir(), controllerConf.getExternalViewOnlineToOfflineTimeout(),
-        controllerConf.tenantIsolationEnabled(), controllerConf.getEnableBatchMessageMode(),
-        controllerConf.getHLCTablesAllowed(), controllerConf.getHelixInstanceType());
+    this(controllerConf, InstanceType.ADMINISTRATOR);
   }
 
   /**
@@ -289,7 +295,7 @@ public class PinotHelixResourceManager {
       return helixManager;
     } catch (Exception e) {
       String errorMsg =
-          String.format("Exception when connecting the instance %s as Participant to Helix.", _instanceId);
+          String.format("Exception when connecting the instance %s as %s to Helix.", _instanceId, _helixInstanceType.name());
       LOGGER.error(errorMsg, e);
       throw new RuntimeException(errorMsg);
     }
