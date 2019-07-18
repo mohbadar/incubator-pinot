@@ -150,7 +150,8 @@ public class PinotHelixResourceManager {
 
   public PinotHelixResourceManager(@Nonnull String zkURL, @Nonnull String helixClusterName,
       @Nonnull String controllerInstanceId, String dataDir, long externalViewOnlineToOfflineTimeoutMillis,
-      boolean isSingleTenantCluster, boolean enableBatchMessageMode, boolean allowHLCTables, InstanceType helixInstanceType) {
+      boolean isSingleTenantCluster, boolean enableBatchMessageMode, boolean allowHLCTables,
+      InstanceType helixInstanceType) {
     _helixZkURL = HelixConfig.getAbsoluteZkPathForHelix(zkURL);
     _helixClusterName = helixClusterName;
     _instanceId = controllerInstanceId;
@@ -207,6 +208,7 @@ public class PinotHelixResourceManager {
    * Stop the Pinot controller instance.
    */
   public synchronized void stop() {
+    _leadControllerManager.unregisterResourceManager();
     _segmentDeletionManager.stop();
     _helixZkManager.disconnect();
   }
@@ -267,7 +269,6 @@ public class PinotHelixResourceManager {
     return _propertyStore;
   }
 
-
   /**
    * Get lead controller manager.
    *
@@ -286,16 +287,15 @@ public class PinotHelixResourceManager {
 
     // Registers Master-Slave state model to state machine engine, which is for calculating participant assignment in lead controller resource.
     if (_helixInstanceType.equals(InstanceType.PARTICIPANT)) {
-      helixManager.getStateMachineEngine()
-          .registerStateModelFactory(MasterSlaveSMD.name,
-              new LeadControllerResourceMasterSlaveStateModelFactory(_leadControllerManager));
+      helixManager.getStateMachineEngine().registerStateModelFactory(MasterSlaveSMD.name,
+          new LeadControllerResourceMasterSlaveStateModelFactory(_leadControllerManager));
     }
     try {
       helixManager.connect();
       return helixManager;
     } catch (Exception e) {
-      String errorMsg =
-          String.format("Exception when connecting the instance %s as %s to Helix.", _instanceId, _helixInstanceType.name());
+      String errorMsg = String
+          .format("Exception when connecting the instance %s as %s to Helix.", _instanceId, _helixInstanceType.name());
       LOGGER.error(errorMsg, e);
       throw new RuntimeException(errorMsg);
     }
