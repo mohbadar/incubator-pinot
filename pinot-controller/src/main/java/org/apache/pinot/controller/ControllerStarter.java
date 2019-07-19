@@ -249,12 +249,8 @@ public class ControllerStarter {
     // Get lead controller manager from resource manager.
     _leadControllerManager = _helixResourceManager.getLeadControllerManager();
 
-    // This registration is not needed when the resource is enabled.
-    // However, the resource can be disabled sometime while the cluster is in operation, so we keep it here. Plus, it does not add much overhead.
-    // At some point in future when we stop supporting the disabled resource, we will remove this line altogether and the logic that goes with it.
-    LOGGER.info("Registering helix controller listener");
-    helixParticipantManager.addControllerListener(
-        (ControllerChangeListener) changeContext -> _leadControllerManager.onHelixControllerChange());
+    // Register listeners.
+    registerListeners(helixParticipantManager);
 
     LOGGER.info("Starting task resource manager");
     _helixTaskResourceManager = new PinotHelixTaskResourceManager(new TaskDriver(helixParticipantManager));
@@ -417,6 +413,23 @@ public class ControllerStarter {
       PinotCrypterFactory.init(pinotCrypterConfig);
     } catch (Exception e) {
       throw new RuntimeException("Caught exception while initializing PinotCrypterFactory", e);
+    }
+  }
+
+  private void registerListeners(HelixManager helixParticipantManager) {
+    // This registration is not needed when the resource is enabled.
+    // However, the resource can be disabled sometime while the cluster is in operation, so we keep it here. Plus, it does not add much overhead.
+    // At some point in future when we stop supporting the disabled resource, we will remove this line altogether and the logic that goes with it.
+    LOGGER.info("Registering helix controller listener");
+    helixParticipantManager.addControllerListener(
+        (ControllerChangeListener) changeContext -> _leadControllerManager.onHelixControllerChange());
+
+    LOGGER.info("Registering resource config listener");
+    try {
+      helixParticipantManager.addResourceConfigChangeListener(
+          (resourceConfigList, changeContext) -> _leadControllerManager.onResourceConfigChange());
+    } catch (Exception e) {
+      throw new RuntimeException("Error registering resource config listener", e);
     }
   }
 
