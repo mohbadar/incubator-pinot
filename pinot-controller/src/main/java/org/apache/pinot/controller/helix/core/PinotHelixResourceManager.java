@@ -61,7 +61,6 @@ import org.apache.helix.model.IdealState;
 import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.model.LiveInstance;
 import org.apache.helix.model.MasterSlaveSMD;
-import org.apache.helix.model.ResourceConfig;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
 import org.apache.pinot.common.config.IndexingConfig;
 import org.apache.pinot.common.config.OfflineTagConfig;
@@ -138,6 +137,7 @@ public class PinotHelixResourceManager {
   private final boolean _enableBatchMessageMode;
   private final boolean _allowHLCTables;
   private final InstanceType _helixInstanceType;
+  private final LeadControllerManager _leadControllerManager;
 
   private HelixManager _helixZkManager;
   private HelixAdmin _helixAdmin;
@@ -149,7 +149,6 @@ public class PinotHelixResourceManager {
   private PinotLLCRealtimeSegmentManager _pinotLLCRealtimeSegmentManager;
   private RebalanceSegmentStrategyFactory _rebalanceSegmentStrategyFactory;
   private TableRebalancer _tableRebalancer;
-  private LeadControllerManager _leadControllerManager;
 
   public PinotHelixResourceManager(@Nonnull String zkURL, @Nonnull String helixClusterName,
       @Nonnull String controllerInstanceId, String dataDir, long externalViewOnlineToOfflineTimeoutMillis,
@@ -164,6 +163,11 @@ public class PinotHelixResourceManager {
     _enableBatchMessageMode = enableBatchMessageMode;
     _allowHLCTables = allowHLCTables;
     _helixInstanceType = helixInstanceType;
+
+    _helixZkManager =
+        HelixManagerFactory.getZKHelixManager(_helixClusterName, _instanceId, _helixInstanceType, _helixZkURL);
+    // LeadControllerManager needs to be initialized before registering as Helix participant.
+    _leadControllerManager = new LeadControllerManager(_instanceId, _helixZkManager);
   }
 
   // This constructor should only be explicitly called by {@link ControllerStarter}.
@@ -183,9 +187,7 @@ public class PinotHelixResourceManager {
    * Create Helix cluster if needed, and then start a Pinot controller instance.
    */
   public synchronized void start() {
-    // LeadControllerManager needs to be initialized before registering to Helix participant.
-    _leadControllerManager = new LeadControllerManager();
-    _helixZkManager = registerAndConnectToHelixCluster();
+    registerAndConnectToHelixCluster();
     _helixAdmin = _helixZkManager.getClusterManagmentTool();
     _propertyStore = _helixZkManager.getHelixPropertyStore();
     _helixDataAccessor = _helixZkManager.getHelixDataAccessor();
@@ -204,7 +206,6 @@ public class PinotHelixResourceManager {
     _segmentDeletionManager = new SegmentDeletionManager(_dataDir, _helixAdmin, _helixClusterName, _propertyStore);
     ZKMetadataProvider.setClusterTenantIsolationEnabled(_propertyStore, _isSingleTenantCluster);
     _tableRebalancer = new TableRebalancer(_helixZkManager, _helixAdmin, _helixClusterName);
-    _leadControllerManager.registerResourceManager(this);
   }
 
   /**
@@ -284,18 +285,15 @@ public class PinotHelixResourceManager {
   /**
    * Register and connect to Helix cluster as PARTICIPANT role.
    */
-  private HelixManager registerAndConnectToHelixCluster() {
-    HelixManager helixManager =
-        HelixManagerFactory.getZKHelixManager(_helixClusterName, _instanceId, _helixInstanceType, _helixZkURL);
-
+  private void registerAndConnectToHelixCluster() {
+    Preconditions.checkArgument(_helixZkManager != null, "HelixZkManager should not be null!");
     // Registers Master-Slave state model to state machine engine, which is for calculating participant assignment in lead controller resource.
     if (_helixInstanceType.equals(InstanceType.PARTICIPANT)) {
-      helixManager.getStateMachineEngine().registerStateModelFactory(MasterSlaveSMD.name,
+      _helixZkManager.getStateMachineEngine().registerStateModelFactory(MasterSlaveSMD.name,
           new LeadControllerResourceMasterSlaveStateModelFactory(_leadControllerManager));
     }
     try {
-      helixManager.connect();
-      return helixManager;
+      _helixZkManager.connect();
     } catch (Exception e) {
       String errorMsg = String
           .format("Exception when connecting the instance %s as %s to Helix.", _instanceId, _helixInstanceType.name());
@@ -2397,20 +2395,6 @@ public class PinotHelixResourceManager {
       endpointToInstance.put(instance, hostnameSplit[1] + ":" + adminPort);
     }
     return endpointToInstance;
-  }
-
-  public boolean isHelixLeader() {
-    PropertyKey propertyKey = _keyBuilder.controllerLeader();
-    LiveInstance liveInstance = _helixDataAccessor.getProperty(propertyKey);
-    String helixLeaderInstanceId = liveInstance.getInstanceName();
-    return _instanceId.equals(CommonConstants.Helix.PREFIX_OF_CONTROLLER_INSTANCE + helixLeaderInstanceId);
-  }
-
-  public boolean isLeadControllerResourceEnabled() {
-    PropertyKey propertyKey = _keyBuilder.resourceConfig(LEAD_CONTROLLER_RESOURCE_NAME);
-    ResourceConfig resourceConfig = _helixDataAccessor.getProperty(propertyKey);
-    String enableResource = resourceConfig.getSimpleConfig(LeadControllerUtils.RESOURCE_ENABLED);
-    return Boolean.parseBoolean(enableResource);
   }
 
   public void enableLeadControllerResource(boolean enable) {
